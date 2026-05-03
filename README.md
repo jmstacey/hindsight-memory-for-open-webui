@@ -10,6 +10,7 @@ This repository contains a **single Open WebUI Filter function** that integrates
 - Reuses **Hindsight recall** to inject relevant memories before the model sees the prompt
 - Reuses **Hindsight retain** to persist the user/assistant turn after the assistant responds
 - Uses an extractive, multi-query recall rewrite pipeline to keep recall requests under Hindsight's 500-token limit
+- Strips fenced code blocks and skips malformed recall queries so code snippets do not trigger empty-word recall errors
 - Exposes admin-configurable settings in Open WebUI's function valves panel
 - Supports memory scoping by:
   - global databank (default)
@@ -87,11 +88,13 @@ Authorization is sent as:
 
 On each eligible user turn, the function:
 
-1. Extracts memory-relevant query anchors from the latest user message and a small amount of recent context
-2. Generates up to a few compact recall query variants so long prompts can still fit Hindsight's 500-token cap
-3. Calls Hindsight recall for each extracted query and merges/dedupes the results
-4. Calls Hindsight reflect only when recall is sufficiently rich and the turn is due for synthesis
-5. Injects a system message with the retrieved memory context
+1. Strips fenced code blocks from the prompt before query extraction so code samples do not dominate recall
+2. Extracts memory-relevant query anchors from the latest user message and a small amount of recent context
+3. Generates up to a few compact recall query variants so long prompts can still fit Hindsight's 500-token cap
+4. Skips recall entirely if extraction leaves no searchable terms
+5. Calls Hindsight recall for each extracted query and merges/dedupes the results
+6. Calls Hindsight reflect only when recall is sufficiently rich and the turn is due for synthesis
+7. Injects a system message with the retrieved memory context
 
 ### Retain
 
@@ -158,6 +161,7 @@ Set `enabled = false` and verify that:
 - If you rely heavily on direct API integrations, test the function carefully in your exact Open WebUI version.
 - The Hindsight bank auto-creation step is best-effort; some deployments may restrict bank config updates.
 - Recall queries are rewritten extractively, not summarized conversationally, to preserve entities, dates, and technical terms.
+- Fenced code blocks are removed before extraction so prompts that are mostly code or markdown do not produce invalid recall queries.
 
 ## Assumptions
 

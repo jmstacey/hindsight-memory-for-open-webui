@@ -2,7 +2,7 @@
 title: Hindsight Memory for Open WebUI
 author: Jon Stacey
 author_url: https://JonStacey.com
-version: 0.1.1
+version: 0.1.2
 description: Recall and retain long-term memory in Open WebUI using Hindsight.
 required_open_webui_version: 0.5.0
 """
@@ -444,6 +444,20 @@ class Filter:
             keep_tail = max(8, max_tokens - keep_head)
         return " ".join(tokens[:keep_head]) + "\n...[truncated]...\n" + " ".join(tokens[-keep_tail:])
 
+    def _strip_fenced_code_blocks(self, text: str) -> str:
+        if not text:
+            return ""
+        return re.sub(r"```.*?```", "\n", text, flags=re.DOTALL)
+
+    def _first_wordy_sentence(self, text: str) -> str:
+        if not text:
+            return ""
+        for chunk in re.split(r"[\n\.!?]+", text):
+            chunk = re.sub(r"\s+", " ", chunk).strip()
+            if chunk and re.search(r"\w", chunk):
+                return chunk
+        return ""
+
     def _extract_recall_queries(self, user_text: str, messages: List[dict], settings: dict) -> List[str]:
         user_text = (user_text or "").strip()
         if not user_text:
@@ -460,8 +474,8 @@ class Filter:
             if content:
                 lines.append(f"{role}: {content}")
 
-        source_text = "\n".join(lines).strip() or user_text
-        user_sentence = re.split(r"[\n\.!?]", user_text)[-1].strip() or user_text
+        source_text = self._strip_fenced_code_blocks("\n".join(lines).strip() or user_text)
+        user_sentence = self._first_wordy_sentence(user_text) or user_text
         user_sentence = self._trim_text_to_tokens(user_sentence, max_tokens)
 
         # Heuristic extractive compression: preserve names, technical terms, dates, and the last user ask.
@@ -505,7 +519,13 @@ class Filter:
         if not queries:
             add_query(source_text)
 
-        return queries[:max_queries]
+        normalized_queries: List[str] = []
+        for q in queries:
+            if not re.search(r"\w", q):
+                continue
+            if q not in normalized_queries:
+                normalized_queries.append(q)
+        return normalized_queries[:max_queries]
 
     def _resolve_user_valves(self, __user__: Optional[dict]) -> Optional[BaseModel]:
         if not __user__:
@@ -835,15 +855,22 @@ class Filter:
                 self._log("recall skipped: empty query after extraction")
             else:
                 raw_query = queries[0]
-                if self._query_too_long(raw_query, settings):
+                if not re.search(r"\w", raw_query):
+                    self._log("recall skipped: query had no searchable terms after extraction")
+                    queries = []
+                elif self._query_too_long(raw_query, settings):
                     behavior = settings.get("recall_long_query_behavior", "truncate")
                     if behavior == "skip":
                         self._log("recall skipped: query too long")
                         queries = []
                     else:
                         truncated = self._trim_text_to_tokens(raw_query, max(1, int(settings.get("recall_query_max_tokens", 400))))
-                        self._log(f"recall query trimmed from {self._approx_token_count(raw_query)} to {self._approx_token_count(truncated)} tokens")
-                        queries[0] = truncated
+                        if not re.search(r"\w", truncated):
+                            self._log("recall skipped: truncated query had no searchable terms")
+                            queries = []
+                        else:
+                            self._log(f"recall query trimmed from {self._approx_token_count(raw_query)} to {self._approx_token_count(truncated)} tokens")
+                            queries[0] = truncated
 
             if queries:
                 if settings.get("show_recall_indicator", True):
