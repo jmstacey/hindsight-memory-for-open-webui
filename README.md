@@ -9,6 +9,7 @@ This repository contains a **single Open WebUI Filter function** that integrates
 
 - Reuses **Hindsight recall** to inject relevant memories before the model sees the prompt
 - Reuses **Hindsight retain** to persist the user/assistant turn after the assistant responds
+- Uses an extractive, multi-query recall rewrite pipeline to keep recall requests under Hindsight's 500-token limit
 - Exposes admin-configurable settings in Open WebUI's function valves panel
 - Supports memory scoping by:
   - global databank (default)
@@ -41,7 +42,10 @@ This repository contains a **single Open WebUI Filter function** that integrates
    - `bank_scope` — `global`, `user`, `chat`, or `manual`
    - `bank_id` — databank to use when `bank_scope=global` or `manual`
    - `reflect_mode` — `smart`, `always`, or `never`
-   - any recall/reflect tuning options you want to override
+   - `recall_query_max_tokens` — maximum size for each recall query fragment (default `400`)
+   - `recall_query_max_queries` — max number of query variants generated from one prompt (default `4`)
+   - `recall_query_context_turns` — how many recent turns to use when extracting recall anchors (default `2`)
+   - any other recall/reflect tuning options you want to override
 
 ## Recommended defaults
 
@@ -54,6 +58,9 @@ The function defaults are tuned for a practical starting point:
 - `search_budget = mid`
 - `reflect_budget = low`
 - `context_tokens = 1200`
+- `recall_query_max_tokens = 400`
+- `recall_query_max_queries = 4`
+- `recall_query_context_turns = 2`
 - `context_refresh_ttl_seconds = 300`
 - `context_refresh_message_threshold = 8`
 - `context_cadence = 1`
@@ -80,10 +87,11 @@ Authorization is sent as:
 
 On each eligible user turn, the function:
 
-1. Builds a recall query from the latest user message and recent conversation context
-2. Calls Hindsight recall
-3. Calls Hindsight reflect only when recall is sufficiently rich and the turn is due for synthesis
-4. Injects a system message with the retrieved memory context
+1. Extracts memory-relevant query anchors from the latest user message and a small amount of recent context
+2. Generates up to a few compact recall query variants so long prompts can still fit Hindsight's 500-token cap
+3. Calls Hindsight recall for each extracted query and merges/dedupes the results
+4. Calls Hindsight reflect only when recall is sufficiently rich and the turn is due for synthesis
+5. Injects a system message with the retrieved memory context
 
 ### Retain
 
@@ -119,6 +127,7 @@ Use a known-good Hindsight server and confirm the function can reach it:
 3. Send a follow-up message:
    - “What is my favorite color?”
 4. Confirm the recalled memory is injected and the answer uses it.
+5. Try a long, multi-topic prompt and verify the filter extracts compact recall queries instead of sending the full prompt to Hindsight.
 
 ### 3. Retain test
 
@@ -148,6 +157,7 @@ Set `enabled = false` and verify that:
 - Open WebUI filter `outlet()` behavior can vary depending on request path and deployment mode.
 - If you rely heavily on direct API integrations, test the function carefully in your exact Open WebUI version.
 - The Hindsight bank auto-creation step is best-effort; some deployments may restrict bank config updates.
+- Recall queries are rewritten extractively, not summarized conversationally, to preserve entities, dates, and technical terms.
 
 ## Assumptions
 

@@ -2,7 +2,7 @@
 title: Hindsight Memory for Open WebUI
 author: Jon Stacey
 author_url: https://JonStacey.com
-version: 0.1.0
+version: 0.1.1
 description: Recall and retain long-term memory in Open WebUI using Hindsight.
 required_open_webui_version: 0.5.0
 """
@@ -213,6 +213,18 @@ class Filter:
             default=1200,
             description="Approximate token budget for injected memory context.",
         )
+        recall_query_context_turns: int = Field(
+            default=2,
+            description="How many prior turns to include when building a recall query.",
+        )
+        recall_query_max_tokens: int = Field(
+            default=400,
+            description="Approximate token budget for recall queries. Keeps requests safely under Hindsight's 500-token cap.",
+        )
+        recall_query_max_queries: int = Field(
+            default=4,
+            description="Maximum number of recall queries to generate from one user prompt.",
+        )
         context_refresh_ttl_seconds: int = Field(
             default=300,
             description="Refresh recalled memory context after this many seconds.",
@@ -260,8 +272,8 @@ class Filter:
             description="Maximum characters to store per retained turn.",
         )
         recall_long_query_behavior: Literal["skip", "truncate"] = Field(
-            default="skip",
-            description="How to handle recall queries that exceed the configured length.",
+            default="truncate",
+            description="How to handle recall queries that exceed the configured length. Truncate is the recommended default.",
             json_schema_extra={
                 "input": {"type": "select", "options": ["skip", "truncate"]},
             },
@@ -412,6 +424,89 @@ class Filter:
     def _split_csv(self, value: str) -> List[str]:
         return [item.strip() for item in (value or "").split(",") if item.strip()]
 
+    def _approx_token_count(self, text: str) -> int:
+        if not text:
+            return 0
+        return len(re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE))
+
+    def _trim_text_to_tokens(self, text: str, max_tokens: int) -> str:
+        max_tokens = max(1, int(max_tokens))
+        if not text:
+            return ""
+        tokens = re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
+        if len(tokens) <= max_tokens:
+            return text
+        if max_tokens <= 16:
+            return " ".join(tokens[:max_tokens])
+        keep_head = max(8, max_tokens // 3)
+        keep_tail = max(8, max_tokens - keep_head)
+        if keep_head + keep_tail > max_tokens:
+            keep_tail = max(8, max_tokens - keep_head)
+        return " ".join(tokens[:keep_head]) + "\n...[truncated]...\n" + " ".join(tokens[-keep_tail:])
+
+    def _extract_recall_queries(self, user_text: str, messages: List[dict], settings: dict) -> List[str]:
+        user_text = (user_text or "").strip()
+        if not user_text:
+            return []
+
+        max_queries = max(1, int(settings.get("recall_query_max_queries", 4)))
+        max_tokens = max(1, int(settings.get("recall_query_max_tokens", 400)))
+        context_turns = max(0, int(settings.get("recall_query_context_turns", 2)))
+
+        lines = []
+        for msg in (messages or [])[-context_turns - 1 :]:
+            role = msg.get("role", "unknown")
+            content = self._normalize_text(msg.get("content")).strip()
+            if content:
+                lines.append(f"{role}: {content}")
+
+        source_text = "\n".join(lines).strip() or user_text
+        user_sentence = re.split(r"[\n\.!?]", user_text)[-1].strip() or user_text
+        user_sentence = self._trim_text_to_tokens(user_sentence, max_tokens)
+
+        # Heuristic extractive compression: preserve names, technical terms, dates, and the last user ask.
+        anchors: List[str] = []
+        seen = set()
+        for pattern in (
+            r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b",  # names / titles
+            r"\b\d{4}(?:-\d{2}(?:-\d{2})?)?\b",  # dates
+            r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december|spring|summer|fall|autumn|winter|yesterday|today|tomorrow|last\s+spring|last\s+summer|last\s+fall|last\s+winter|last\s+year|this\s+week|last\s+week|next\s+week)\b",
+            r"`[^`]+`|\"[^\"]+\"|'[^']+'",  # quoted / code terms
+            r"\b[A-Za-z0-9_.-]{3,}\b",  # technical / identifier-like terms
+        ):
+            for match in re.findall(pattern, source_text, flags=re.IGNORECASE):
+                candidate = str(match).strip().strip(".,:;!?()[]{}")
+                key = candidate.lower()
+                if candidate and key not in seen:
+                    seen.add(key)
+                    anchors.append(candidate)
+
+        queries: List[str] = []
+
+        def add_query(q: str):
+            q = re.sub(r"\s+", " ", (q or "")).strip()
+            if not q:
+                return
+            q = self._trim_text_to_tokens(q, max_tokens)
+            if q and q not in queries:
+                queries.append(q)
+
+        # Start with the user's own question, then add compressed anchor-based variants.
+        add_query(user_sentence)
+        if anchors:
+            add_query(" ".join(anchors[: min(len(anchors), 6)]))
+            if len(anchors) >= 2:
+                add_query(" ".join(anchors[:2]))
+            if len(anchors) >= 4:
+                add_query(" ".join(anchors[:4]))
+            if len(anchors) >= 6:
+                add_query(" ".join(anchors[:6]))
+
+        if not queries:
+            add_query(source_text)
+
+        return queries[:max_queries]
+
     def _resolve_user_valves(self, __user__: Optional[dict]) -> Optional[BaseModel]:
         if not __user__:
             return None
@@ -546,18 +641,38 @@ class Filter:
         return any(marker in lowered for marker in ("#nomem", "#skip", "hindsight:skip"))
 
     def _query_too_long(self, text: str, settings: dict) -> bool:
-        return len(text) > max(1, int(settings.get("max_message_chars", 25000)))
+        return self._approx_token_count(text) > max(1, int(settings.get("recall_query_max_tokens", 400)))
 
     def _trim_text(self, text: str, max_chars: int) -> str:
         if len(text) <= max_chars:
             return text
-        return text[: max_chars - 30] + "\n...[truncated]"
+        return text[: max_chars - 30] + "\n...[truncated]..."
 
-    def _build_recall_query(self, user_text: str, messages: List[dict]) -> str:
-        context = self._get_latest_messages_text(messages[:-1] if messages else [], limit=4)
-        if context:
-            return f"Conversation context:\n{context}\n\nCurrent user request:\n{user_text}"
-        return user_text
+    def _build_recall_query(self, user_text: str, messages: List[dict], settings: dict) -> str:
+        user_text = (user_text or "").strip()
+        if not user_text:
+            return ""
+
+        max_tokens = max(1, int(settings.get("recall_query_max_tokens", 400)))
+        context_turns = max(0, int(settings.get("recall_query_context_turns", 2)))
+        context = self._get_latest_messages_text(messages[:-1] if messages else [], limit=context_turns).strip()
+        if not context:
+            return self._trim_text_to_tokens(user_text, max_tokens)
+
+        prefix_tokens = self._approx_token_count("Conversation context:\n\nCurrent user request:\n")
+        user_budget = max(1, max_tokens - prefix_tokens)
+        if self._approx_token_count(user_text) > user_budget:
+            user_text = self._trim_text_to_tokens(user_text, user_budget)
+
+        remaining = max_tokens - prefix_tokens - self._approx_token_count(user_text)
+        if remaining <= 0:
+            return user_text
+
+        context = self._trim_text_to_tokens(context, remaining)
+        query = f"Conversation context:\n{context}\n\nCurrent user request:\n{user_text}"
+        if self._query_too_long(query, settings):
+            return self._trim_text_to_tokens(query, max_tokens)
+        return query
 
     def _format_recall_results(self, response: Any, settings: dict) -> str:
         if isinstance(response, str):
@@ -715,22 +830,60 @@ class Filter:
         recall_text = state.get("recall_text", "")
         reflect_text = state.get("reflect_text", "")
         if should_recall:
-            query = self._build_recall_query(user_text, messages)
-            if self._query_too_long(query, settings) and settings.get("recall_long_query_behavior", "skip") == "skip":
-                self._log("recall skipped: query too long")
+            queries = self._extract_recall_queries(user_text, messages, settings)
+            if not queries:
+                self._log("recall skipped: empty query after extraction")
             else:
-                if self._query_too_long(query, settings):
-                    query = self._trim_text(query, max(200, int(settings.get("max_message_chars", 25000))))
+                raw_query = queries[0]
+                if self._query_too_long(raw_query, settings):
+                    behavior = settings.get("recall_long_query_behavior", "truncate")
+                    if behavior == "skip":
+                        self._log("recall skipped: query too long")
+                        queries = []
+                    else:
+                        truncated = self._trim_text_to_tokens(raw_query, max(1, int(settings.get("recall_query_max_tokens", 400))))
+                        self._log(f"recall query trimmed from {self._approx_token_count(raw_query)} to {self._approx_token_count(truncated)} tokens")
+                        queries[0] = truncated
+
+            if queries:
                 if settings.get("show_recall_indicator", True):
                     await self._emit(__event_emitter__, "Searching Hindsight memory…", False)
-                recall_response = await asyncio.to_thread(self._recall_memories, client, bank_id, query, settings)
-                recall_text = self._format_recall_results(recall_response, settings)
+
+                recall_response = None
+                recall_text = ""
                 reflect_text = ""
                 recall_count = 0
+                seen_result_ids = set()
+                merged_results = []
+
+                for idx, query in enumerate(queries, start=1):
+                    if idx > 1 and settings.get("logging", True):
+                        self._log(f"recall query {idx}/{len(queries)}: {query}")
+                    response = await asyncio.to_thread(self._recall_memories, client, bank_id, query, settings)
+                    if recall_response is None:
+                        recall_response = response
+                    if isinstance(response, dict):
+                        results = response.get("results")
+                        if isinstance(results, list):
+                            for item in results:
+                                if not isinstance(item, dict):
+                                    continue
+                                rid = self._normalize_text(item.get("id") or item.get("memory_id") or item.get("chunk_id") or item.get("text"))
+                                if rid and rid in seen_result_ids:
+                                    continue
+                                if rid:
+                                    seen_result_ids.add(rid)
+                                merged_results.append(item)
+
                 if isinstance(recall_response, dict):
-                    results = recall_response.get("results")
-                    if isinstance(results, list):
-                        recall_count = len(results)
+                    recall_response = dict(recall_response)
+                    recall_response["results"] = merged_results
+                    recall_count = len(merged_results)
+                elif recall_response is None:
+                    recall_response = {"results": merged_results}
+                    recall_count = len(merged_results)
+
+                recall_text = self._format_recall_results(recall_response, settings)
 
                 should_reflect = False
                 if reflect_mode == "always":
