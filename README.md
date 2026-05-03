@@ -2,6 +2,9 @@
 
 This repository contains a **single Open WebUI Filter function** that integrates Hindsight for long-term memory.
 
+- [Open WebUI](https://github.com/open-webui/open-webui) — extensible, self-hosted AI interface
+- [Hindsight](https://github.com/vectorize-io/hindsight) — agent memory that learns over time
+
 ## What it does
 
 - Reuses **Hindsight recall** to inject relevant memories before the model sees the prompt
