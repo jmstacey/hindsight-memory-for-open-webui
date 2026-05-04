@@ -16,3 +16,4 @@ env/
 .idea/
 
 # Project-specific runtime artifacts
+.ralph/
