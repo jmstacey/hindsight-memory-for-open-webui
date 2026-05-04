@@ -12,6 +12,7 @@ This repository contains a **single Open WebUI Filter function** that integrates
 - Uses an extractive, multi-query recall rewrite pipeline to keep recall requests under Hindsight's 500-token limit
 - Strips fenced code blocks and skips malformed recall queries so code snippets do not trigger empty-word recall errors
 - Exposes admin-configurable settings in Open WebUI's function valves panel
+- Is toggleable per chat in Open WebUI's Integrations menu when enabled as a filter
 - Supports memory scoping by:
   - global databank (default)
   - per-user databank
@@ -47,6 +48,8 @@ This repository contains a **single Open WebUI Filter function** that integrates
    - `recall_query_max_queries` — max number of query variants generated from one prompt (default `4`)
    - `recall_query_context_turns` — how many recent turns to use when extracting recall anchors (default `2`)
    - any other recall/reflect tuning options you want to override
+6. In each model's settings, add this filter to the model's Filters list and choose whether it should be enabled by default in **Default Filters**.
+   - When enabled as a toggleable filter, users can switch it on or off per chat from the message box **Integrations** menu.
 
 ## Recommended defaults
 

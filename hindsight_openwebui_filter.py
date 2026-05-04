@@ -22,6 +22,12 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+BRAIN_ICON_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'>
+  <path d='M9.2 4.5a3.5 3.5 0 0 1 5.6 0 3.5 3.5 0 0 1 2.9 5.7 3.5 3.5 0 0 1-.8 6.8A3.5 3.5 0 0 1 12 19.5a3.5 3.5 0 0 1-4.9-2.5 3.5 3.5 0 0 1-.8-6.8 3.5 3.5 0 0 1 2.9-5.7Z'/>
+  <path d='M12 6.2v11.6'/>
+  <path d='M8.3 8.2c1 .5 1.9 1.3 2.3 2.4M15.7 8.2c-1 .5-1.9 1.3-2.3 2.4M7.8 13c1 .2 1.9.8 2.5 1.8M16.2 13c-1 .2 0-1.9.8-2.5 1.8'/>
+</svg>"""
+
 
 class HindsightHTTPClient:
     def __init__(self, base_url: str, api_key: str, timeout_seconds: int = 20):
@@ -370,7 +376,8 @@ class Filter:
 
     def __init__(self):
         self.valves = self.Valves()
-        self._lock = threading.Lock()
+        self.toggle = True
+        self.icon = f"data:image/svg+xml;utf8,{urllib.parse.quote(BRAIN_ICON_SVG)}"
         self._chat_state: Dict[str, Dict[str, Any]] = {}
         self._bank_cache: Dict[str, float] = {}
 
