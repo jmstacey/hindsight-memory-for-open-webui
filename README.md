@@ -45,8 +45,9 @@ This repository contains a **single Open WebUI Filter function** that integrates
    - `bank_id` — databank to use when `bank_scope=global` or `manual`
    - `reflect_mode` — `smart`, `always`, or `never`
    - `recall_query_max_tokens` — maximum size for each recall query fragment (default `400`)
-   - `recall_query_max_queries` — max number of query variants generated from one prompt (default `4`)
-   - `recall_query_context_turns` — how many recent turns to use when extracting recall anchors (default `2`)
+   - `recall_query_behavior` — `truncate` (default) or `multi`; `truncate` sends one hard-capped query, `multi` preserves the legacy fan-out behavior
+   - `recall_query_max_queries` — max number of query variants generated from one prompt when `recall_query_behavior=multi` (default `4`)
+   - `recall_query_context_turns` — how many recent turns to use when extracting recall anchors (default `1`)
    - any other recall/reflect tuning options you want to override
 6. In each model's settings, add this filter to the model's Filters list and choose whether it should be enabled by default in **Default Filters**.
    - When enabled as a toggleable filter, users can switch it on or off per chat from the message box **Integrations** menu.
@@ -63,8 +64,9 @@ The function defaults are tuned for a practical starting point:
 - `reflect_budget = low`
 - `context_tokens = 1200`
 - `recall_query_max_tokens = 400`
+- `recall_query_behavior = truncate`
 - `recall_query_max_queries = 4`
-- `recall_query_context_turns = 2`
+- `recall_query_context_turns = 1`
 - `context_refresh_ttl_seconds = 300`
 - `context_refresh_message_threshold = 8`
 - `context_cadence = 1`

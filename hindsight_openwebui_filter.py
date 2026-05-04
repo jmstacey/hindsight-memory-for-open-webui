@@ -2,7 +2,7 @@
 title: Hindsight Memory for Open WebUI
 author: Jon Stacey
 author_url: https://JonStacey.com
-version: 0.1.2
+version: 0.1.3
 description: Recall and retain long-term memory in Open WebUI using Hindsight.
 required_open_webui_version: 0.5.0
 """
@@ -220,8 +220,21 @@ class Filter:
             description="Approximate token budget for injected memory context.",
         )
         recall_query_context_turns: int = Field(
-            default=2,
+            default=1,
             description="How many prior turns to include when building a recall query.",
+        )
+        recall_query_behavior: str = Field(
+            default="truncate",
+            description="How to shape recall queries. truncate sends one compact hard-capped query; multi generates multiple compressed query variants.",
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "truncate", "label": "Single query by truncating (Default)"},
+                        {"value": "multi", "label": "Multiple queries by splitting"},
+                    ],
+                }
+            },
         )
         recall_query_max_tokens: int = Field(
             default=400,
@@ -229,7 +242,7 @@ class Filter:
         )
         recall_query_max_queries: int = Field(
             default=4,
-            description="Maximum number of recall queries to generate from one user prompt.",
+            description="Maximum number of recall queries to generate from one user prompt when recall_query_behavior=multi.",
         )
         context_refresh_ttl_seconds: int = Field(
             default=300,
@@ -277,11 +290,17 @@ class Filter:
             default=25000,
             description="Maximum characters to store per retained turn.",
         )
-        recall_long_query_behavior: Literal["skip", "truncate"] = Field(
+        recall_long_query_behavior: str = Field(
             default="truncate",
             description="How to handle recall queries that exceed the configured length. Truncate is the recommended default.",
             json_schema_extra={
-                "input": {"type": "select", "options": ["skip", "truncate"]},
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "truncate", "label": "Truncate the query"},
+                        {"value": "skip", "label": "Skip the query"},
+                    ],
+                },
             },
         )
         reflect_mode: Literal["smart", "always", "never"] = Field(
@@ -378,6 +397,7 @@ class Filter:
         self.valves = self.Valves()
         self.toggle = True
         self.icon = f"data:image/svg+xml;utf8,{urllib.parse.quote(BRAIN_ICON_SVG)}"
+        self._lock = threading.Lock()
         self._chat_state: Dict[str, Dict[str, Any]] = {}
         self._bank_cache: Dict[str, float] = {}
 
@@ -465,14 +485,14 @@ class Filter:
                 return chunk
         return ""
 
-    def _extract_recall_queries(self, user_text: str, messages: List[dict], settings: dict) -> List[str]:
+    def _extract_multi_recall_queries(self, user_text: str, messages: List[dict], settings: dict) -> List[str]:
         user_text = (user_text or "").strip()
         if not user_text:
             return []
 
         max_queries = max(1, int(settings.get("recall_query_max_queries", 4)))
         max_tokens = max(1, int(settings.get("recall_query_max_tokens", 400)))
-        context_turns = max(0, int(settings.get("recall_query_context_turns", 2)))
+        context_turns = max(0, int(settings.get("recall_query_context_turns", 1)))
 
         lines = []
         for msg in (messages or [])[-context_turns - 1 :]:
@@ -533,6 +553,21 @@ class Filter:
             if q not in normalized_queries:
                 normalized_queries.append(q)
         return normalized_queries[:max_queries]
+
+    def _extract_recall_queries(self, user_text: str, messages: List[dict], settings: dict) -> List[str]:
+        user_text = (user_text or "").strip()
+        if not user_text:
+            return []
+
+        behavior = settings.get("recall_query_behavior", "truncate")
+        if behavior == "multi":
+            return self._extract_multi_recall_queries(user_text, messages, settings)
+
+        query = self._build_recall_query(user_text, messages, settings)
+        if not query or not re.search(r"\w", query):
+            return []
+        max_tokens = max(1, int(settings.get("recall_query_max_tokens", 400)))
+        return [self._trim_text_to_tokens(query, max_tokens)]
 
     def _resolve_user_valves(self, __user__: Optional[dict]) -> Optional[BaseModel]:
         if not __user__:
