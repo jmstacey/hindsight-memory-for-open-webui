@@ -5,6 +5,8 @@ This repository contains a **single Open WebUI Filter function** that integrates
 - [Open WebUI](https://github.com/open-webui/open-webui) — extensible, self-hosted AI interface
 - [Hindsight](https://github.com/vectorize-io/hindsight) — agent memory that learns over time
 
+> **Tip: You can set up Open WebUI using the Hindsight MCP server.** Hindsight ships a built-in MCP server and you can connect Hindsight directly as an MCP server and get recall/retain/reflect as native tools without a separate function. This filter is a direct integration that bypasses the MCP layer (which is becoming less of a differentiator as context windows grow and MCP support becomes standard).
+
 ## What it does
 
 - Reuses **Hindsight recall** to inject relevant memories before the model sees the prompt
